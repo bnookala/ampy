@@ -1,0 +1,199 @@
+#!/usr/bin/env python
+
+import curses
+import curses.textpad
+import time
+import handlers
+import signal
+import sys
+import ampyLog
+
+#	GLOBALS!	
+#stdscr is the encapsulating terminal
+#screen is the encapsulating window
+#nowplayingWin takes the top 3 rows, and shows what song is currently playing
+#playlistWin takes most of the middle rows, except the last 3, and shows the current playlist
+#searchboxWin encapsulates the bottom three rows
+#searchbox is a textpad object that is encapsulated by searchbox
+#searchResultsWin covers up playlistWin and displays results for a search.
+#log is a ampylog object, which does basic logging for ampy, provided by python logging 
+
+stdscr = None
+screen = None
+nowplayingWin = None
+playlistWin = None
+searchboxWin = None
+searchbox = None
+searchResultsWin = None
+log = None
+
+#Global copy of the player state
+playerState = None
+
+#Globally available copies of the rows/columns
+rows = 0
+columns = 0
+
+# Draw a 'GUI' of sorts.
+def setupGUI():
+	global nowplayingWin
+	global stdscr
+	global playlistWin
+	global screen
+	global searchbox
+	global searchboxWin
+	global searchResultsWin
+
+	log.write("Setting up GUI")
+
+	#Set up labels for most of the gui items.
+	screen = stdscr.subwin(rows,columns,0,0)
+	screen.box()
+	screen.hline(2,1,curses.ACS_HLINE,columns-2)
+	screen.hline(rows-3,1,curses.ACS_HLINE,columns-2)
+	screen.addstr(rows-3,2, " Search ", curses.A_BOLD)
+	screen.addstr(0,2, " Now Playing ", curses.A_BOLD)
+	screen.addstr(2,2, " Queue ", curses.A_BOLD)
+	screen.addstr(rows-1, 2, " Logged in as: ", curses.A_BOLD)
+	
+	#Don't cover the search box, make a seperate window for the playlist
+	playlistWin = stdscr.subwin(rows-6,columns-2, 3, 1)
+	nowplayingWin = stdscr.subwin(1, columns-2, 1,1)
+
+	#Create searchbox
+	searchboxWin = stdscr.subwin(1,columns-2,rows-2,1)
+	searchbox = curses.textpad.Textbox(searchboxWin)
+
+	#Create search results window.
+	searchResultsWin = stdscr.subwin(rows-6,columns-2,3,1)
+
+	#Refresh the window
+	searchboxWin.refresh()
+	playlistWin.refresh()
+	nowplayingWin.refresh()
+	screen.refresh()
+
+# Write the state of the player to the screen
+def writePlayerState():
+	global nowplayingWin
+	global screen
+	global playlistWin
+	global playerState
+
+	log.write("Fetching and writing player state")
+	playerState = handlers.fetchPlayerState()
+
+	#No active internet connection
+	if playerState is None:
+		log.write("ERROR: No internet connection")
+		nowplayingWin.addstr(0,0,"Error! Can't connect to Acoustics Server")
+		nowplayingWin.noutrefresh()
+		return
+
+	now_playing = playerState["now_playing"]
+	playlist = playerState["playlist"]
+	user = playerState["who"]
+
+	#Clear and refresh the windows. 
+	playlistWin.clear()
+	nowplayingWin.clear()
+	
+	playlistWin.refresh()
+	nowplayingWin.refresh()
+
+	#Add information to windows.
+	if(now_playing is None):
+		nowplayingWin.addstr(0,0,"Nothing playing")
+	else:
+		nowplayingWin.addstr(0,0,playerState["now_playing"]["title"])
+
+	if(user is not None):
+		screen.addstr(rows-1, 17, user) 
+	else:
+		screen.addstr(rows-1, 17, "Nobody! ")
+
+	if(len(playlist) == 0):
+		playlistWin.addstr(0,0, "Nothing on the playlist!")
+	else:
+		#Make sure we don't write off the edge of the table
+		i = 0
+		pw_y, pw_x = playlistWin.getmaxyx()
+		for song_dict in playlist:
+			if(i < pw_y): 
+				playlistWin.addstr(i,0, song_dict["title"])
+			i = i+1
+
+	#Write changes to terminal
+	nowplayingWin.noutrefresh()
+	screen.noutrefresh()
+	playlistWin.noutrefresh()
+
+#Write to the search results window.
+	
+
+# Terminate curses
+def terminate(error_code):
+	log.write("Terminating ampy")
+	curses.nocbreak()
+	stdscr.keypad(0)
+	curses.echo()
+	curses.endwin()
+	sys.exit(0)
+
+# Main function to setup GUI and write handle events 
+def main():
+
+	log.write("Entering event loop function")
+
+	setupGUI()
+	writePlayerState()
+	quitString = "!quit "
+
+	#input handler
+	while(True):
+		s = searchbox.edit()
+
+		log.write("Search query: " + "'" + s + "'")
+		curses.noecho()
+
+		if (s == "!quit "):
+			log.write("Breaking input loop")
+			break
+		else:
+
+			searchboxWin.clear()
+			searchboxWin.refresh()
+
+	terminate(0)
+
+#Capture SIGINT (Ctrl + C) to prevent awkward terminal after force kill
+def sigint_handler(signal, frame):
+	terminate(0)
+
+# Start program from command line
+if __name__ == "__main__":
+	#Setup curses, init window
+	stdscr = curses.initscr()
+	curses.noecho()
+	curses.cbreak()
+	stdscr.keypad(1)
+
+	#Handle ctrl+c to prevent awkward terminal.
+	signal.signal(signal.SIGINT, sigint_handler)
+
+	#99.99% Positive this only works on Linux. Not sure about the equivalent windows call.
+	try:
+		r, c = stdscr.getmaxyx()
+	except:
+		print "Error: Unsupported terminal"
+		terminate(1)
+	
+	#Support only VT100 and above terminal sizes
+	if (r < 24) or (c < 80):
+		print "Error: terminal window is too small. Please resize to at least 24x80"
+		terminate(1)
+
+	log = ampyLog.ampyLog()
+
+	rows, columns = int(r), int(c)
+	main()

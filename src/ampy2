@@ -1,0 +1,515 @@
+#!/usr/bin/env python
+
+#This is AMPY! V2. Consolidated into one file :)
+#There are a lot of known bugs:
+#	-Uses Curses. Need to find replacement.
+#	-Weird writes to terminal. Polling thread and textbox vie for attention to the \
+#		the terminal. Not good.
+
+#Features:
+#	-Search for music on ACM's servers
+#	-Show what's playing right now.
+#	-Nice little countdown timer :)
+#	-Multi-threaded!
+
+#Todo:
+#	-Authentication
+#	-Upvote songs
+#	-Song details/more information
+
+import curses
+import curses.textpad
+import signal
+import sys 
+import os 
+import logging
+import datetime
+import threading
+import time
+
+#Needed for URL handling
+import urllib2
+import simplejson as json
+
+#Urls/Miscellaneous settings.
+class settings:
+
+	#Root URL of acoustics instance
+	root = "https://www-s.acm.uiuc.edu/acoustics/"
+
+	#Other state URLs
+	urls = {"state": root + "json.pl",
+			"search": root + "json.pl?mode=search",
+			}
+
+
+#Handlers for fetching player state.
+class handlers:
+
+	@staticmethod
+	def fetchPlayerState():
+		stateURL = settings.urls["state"]
+
+		#Try to connect to acoustics instance.
+		try:
+			state = urllib2.urlopen(stateURL)
+		except:
+			return None
+		statePyObj = json.loads(state.read())
+		return statePyObj
+
+	#Perform a search query on Acoustics
+	@staticmethod
+	def searchQuery(query_type, query):
+		searchURL = settings.urls["search"] + ";field=" + query_type + ";value=" + query
+		
+		#Try to connect to acoustics instacne
+		try:
+			searchResults = urllib2.urlopen(searchURL)
+		except:
+			return None
+
+		try:
+			searchJson = json.loads(searchResults.read())
+		except:
+			return None
+
+		return searchJson
+
+	#Return formatted datetime for printing.
+	@staticmethod
+	def getTime(seconds):
+		hours = seconds / 3600
+		seconds -= 3600*hours
+		minutes = seconds / 60
+		seconds -= 60*minutes
+		if hours == 0:
+			return "%02d:%02d" % (minutes, seconds)
+		return "%02d:%02d:%02d" % (hours, minutes, seconds)
+
+
+#	GLOBALS!	
+#stdscr is the encapsulating terminal
+#screen is the encapsulating window
+#nowplayingWin takes the top 3 self.rows, and shows what song is currently playing
+#playlistWin takes most of the middle self.rows, except the last 3, and shows the current playlist
+#searchboxWin encapsulates the bottom three self.rows
+#searchbox is a textpad object that is encapsulated by self.searchbox
+#searchResultsWin covers up self.playlistWin and displays results for a search.
+#log is a ampylog object, which does basic logging for ampy, provided by python logging 
+class ampy:
+
+	stdscr = None
+	screen = None
+	nowplayingWin = None
+	timeWin = None
+	playlistWin = None
+	searchboxWin = None
+	searchbox = None
+	searchResultsWin = None
+	log = None
+
+	#Global copy of the player state
+	playerState = None
+
+	#State lock
+	stateLock = threading.Lock()
+
+	#Lock for writing to terminal.
+	termLock = threading.Lock()
+
+	#Timing thread
+	songTimer = None
+
+	#State polling thread
+	pollingThread = None
+
+	#Globally available copies of the self.rows/self.columns
+	rows = 0
+	columns = 0
+
+	#Log to file for debugging.
+	logging = None
+
+	#Provide a simple wrapper object for basic logging
+	#Also an inner class.
+	class log:
+
+		logfileName = ""
+		prevDir = ""
+
+		def __init__(self):
+			prevDir = os.curdir
+			if not os.path.isdir("../logs/"):
+				os.mkdir("../logs/")
+			os.chdir("../logs/")
+			logfileName = str(datetime.datetime.now()) + ".log"
+			logging.basicConfig(filename=logfileName, level=logging.DEBUG)
+			logging.debug("Starting AMPY!")
+
+		def write(self, string):
+			logging.debug(string)
+
+
+	#Timer object for actively updating the time remaining for a song
+	class timer(threading.Thread):
+
+		event = None
+		father = None
+
+		songStartTime = None
+		songEndTime = None
+		songLength = None
+
+		def __init__(self, dad):
+			self.father = dad
+			threading.Thread.__init__(self)
+			self.event = threading.Event()
+
+			self.father.logMsg("Timing intiated")
+
+		#Every second, this block will update the time remaining in a song by
+		#subtracting the current time from the end time of the song. The number left
+		#is in seconds.
+		def run(self):
+			while not self.event.isSet():
+				playerData = self.father.playerState["player"]
+				currentData = self.father.playerState["now_playing"]
+
+				#While data actually exists/player is running.
+				if playerData is not None and currentData is not None:
+					self.songStartTime = int(playerData["song_start"])
+					self.songLength = int(currentData["length"])
+					self.songEndTime = self.songStartTime + self.songLength
+
+					#Get current time, update stat.
+					unixNow = int(time.time())
+					timeLeft = int(self.songEndTime) - unixNow
+
+
+					if(timeLeft >= 0):
+						self.updateTime(timeLeft)
+					else:
+
+						#Acquire state lock and redraw terminal window. 
+						#To be modified in the future: should keep track of JSON instead, to allow for
+						#unpersistent connections.
+						self.father.stateLock.acquire()
+						try:
+							self.father.playerState = handlers.fetchPlayerState() 
+						finally:
+							self.father.stateLock.release()
+
+						self.father.writePlayerState()
+
+					self.event.wait(1)
+
+		def stop(self):
+			self.event.set()
+
+		#Update time for song.
+		def updateTime(self, timeLeft):
+			timeStr = handlers.getTime(timeLeft)
+
+			self.father.timeWin.clear()
+			self.father.timeWin.refresh()
+			self.father.timeWin.addstr(0,0,timeStr)
+
+			self.father.screen.refresh()
+
+
+	#Polling object to keep retrieving new versions of the player state every 10 seconds.
+	class poll(threading.Thread):
+
+		event = None
+		father = None
+		
+		def __init__(self, dad):
+		
+			self.father = dad
+			threading.Thread.__init__(self)
+			self.event = threading.Event()
+
+			self.father.logMsg("Polling initiated")
+
+		def run(self):
+			while not self.event.isSet():
+				self.father.stateLock.acquire()
+				self.father.logMsg("Polling thread: heartbeat")
+
+				try:
+					self.father.playerState = handlers.fetchPlayerState() 
+				finally:
+					self.father.stateLock.release()
+
+				self.father.writePlayerState()
+				self.event.wait(10)
+
+		def stop(self):
+			self.event.set()
+	
+	#Begin point. Gets console size, and sets signal capturing functions.
+	#Need to do the following:
+	#	- Signal threads, as opposed to vying for lock
+	#	- Capture SIGWINCH, resize appropriately
+
+	def __init__(self, logging=False):
+		#Setup curses, init window
+		self.stdscr = curses.initscr()
+		curses.noecho()
+		curses.cbreak()
+		self.stdscr.keypad(1)
+
+		#Handle ctrl+c to prevent awkward terminal.
+		signal.signal(signal.SIGINT, self.sigint_handler)
+
+		#99.99% Positive this only works on Linux. Not sure about the equivalent windows call.
+		try:
+			r, c = self.stdscr.getmaxyx()
+		except:
+			self.logMsg("Error: Unsupported terminal")
+			self.terminate(1)
+		
+		#Support only VT100 and above terminal sizes
+		if (r < 24) or (c < 80):
+			self.logMsg("Error: terminal window is too small. Please resize to at least 24x80")
+			self.terminate(1)
+
+		self.rows, self.columns = int(r), int(c)
+
+		self.logging = logging
+		if logging:
+			self.log = self.log()
+
+	#Wrapper around logging to write message only if debugging is available.
+	def logMsg(self, msg):
+		if self.logging:
+			self.log.write(msg)
+
+	# Draw a 'GUI' of sorts.
+	def setupGUI(self):
+		self.logMsg("Setting up GUI")
+
+		#Set up labels for most of the gui items.
+		self.screen = self.stdscr.subwin(self.rows,self.columns,0,0)
+		self.screen.box()
+		self.screen.hline(2,1,curses.ACS_HLINE,self.columns-2)
+		self.screen.hline(self.rows-3,1,curses.ACS_HLINE,self.columns-2)
+		self.screen.addstr(self.rows-3,2, " Search ", curses.A_BOLD)
+		self.screen.addstr(0,2, " Now Playing ", curses.A_BOLD)
+		self.screen.addstr(2,2, " Queue ", curses.A_BOLD)
+		self.screen.addstr(self.rows-1, 2, " Logged in as: ", curses.A_BOLD)
+	
+		#Don't cover the search box, make a seperate window for the playlist
+		self.playlistWin = self.stdscr.subwin(self.rows-6,self.columns-2, 3, 1)
+		self.nowplayingWin = self.stdscr.subwin(1, self.columns-11, 1,1)
+
+		#Create self.searchbox
+		self.searchboxWin = self.stdscr.subwin(1,self.columns-2,self.rows-2,1)
+		self.searchbox = curses.textpad.Textbox(self.searchboxWin)
+
+		#Create time window
+		self.timeWin = self.stdscr.subwin(1,9, 1, self.columns-10)
+
+		#Create search results window.
+		self.searchResultsWin = self.stdscr.subwin(self.rows-6,self.columns-2,3,1)
+
+		#Set leaveok, doesn't screw up the window input.
+		self.screen.leaveok(True)
+		self.playlistWin.leaveok(True)
+		self.nowplayingWin.leaveok(True)
+		self.searchboxWin.leaveok(False)
+		self.timeWin.leaveok(True)
+		self.searchResultsWin.leaveok(True)
+
+		#Refresh the window
+		self.searchboxWin.refresh()
+		self.playlistWin.refresh()
+		self.nowplayingWin.refresh()
+		self.timeWin.refresh()
+		self.screen.refresh()
+
+	# Write the state of the player to the self.screen
+	def writePlayerState(self, fetch=True):
+		#Only fetch state when needed. Otherwise, just do a writeout.
+		if fetch:
+			self.logMsg("Fetching player state")
+			self.stateLock.acquire()
+			try:
+				self.playerState = handlers.fetchPlayerState()
+			finally:
+				self.stateLock.release()
+
+		self.logMsg("Writing player state")
+		#No active internet connection
+		if self.playerState is None:
+			self.logMsg("ERROR: No internet connection")
+			self.nowplayingWin.addstr(0,0,"Error! Can't connect to Acoustics Server")
+			self.nowplayingWin.noutrefresh()
+			return
+
+		now_playing = self.playerState["now_playing"]
+		playlist = self.playerState["playlist"]
+		user = self.playerState["who"]
+
+		#Clear and refresh the windows. 
+		self.playlistWin.clear()
+		self.nowplayingWin.clear()
+		
+		self.playlistWin.refresh()
+		self.nowplayingWin.refresh()
+
+		#Add information to windows.
+		if(now_playing is None):
+			self.nowplayingWin.addstr(0,0,"Nothing playing")
+		else:
+			
+			songLen = handlers.getTime(int(now_playing["length"]))
+			addStr = now_playing["title"].encode("utf-8")[:40] + " " + "(" + songLen + ")" \
+							" - " + now_playing["artist"]
+			self.nowplayingWin.addstr(0,0,addStr)
+
+		if(user is not None):
+			self.screen.addstr(self.rows-1, 17, user) 
+		else:
+			self.screen.addstr(self.rows-1, 17, "Nobody! ")
+
+		if(len(playlist) == 0):
+			self.playlistWin.addstr(0,0, "Nothing on the playlist!")
+		else:
+			#Make sure we don't write off the edge of the table
+			i = 0
+			pw_y, pw_x = self.playlistWin.getmaxyx()
+			for song_dict in playlist:
+				if(i < pw_y): 
+					songLen = handlers.getTime(int(song_dict["length"]))
+					addStr = song_dict["title"].encode("utf-8")[:40] + " " + "(" + songLen + ")" \
+							" - " + song_dict["artist"]
+					self.playlistWin.addstr(i,0, addStr)
+				i = i+1
+
+		#Write changes to terminal
+		self.screen.refresh()
+
+	# Kill curses gracefully
+	def terminate(self, error_code):
+		#Stop the song timer, and polling thread.
+		self.pollingThread.stop()
+		self.songTimer.stop()
+
+		#Kill curses.
+		curses.nocbreak()
+		self.stdscr.keypad(0)
+		curses.echo()
+		curses.endwin()
+		sys.exit(0)
+
+	#Run a search query! Kills the playlist population thread then populates playlist window
+	#with search results. Running !l will return the queue again. Now playing should continue updating at
+	#the end of every song.
+	def runSearch(self, query):
+		self.playlistWin.clear()
+		self.playlistWin.refresh()
+
+		self.pollingThread.stop()
+		del(self.pollingThread)
+
+		self.screen.addstr(2,2, " Result ", curses.A_BOLD)
+		searchJson = handlers.searchQuery("any",query)
+
+		i = 0
+		pw_y, pw_x = self.playlistWin.getmaxyx()
+		if searchJson is not None:
+			for song_dict in searchJson:
+				if(i < pw_y):
+					songLen = handlers.getTime(int(song_dict["length"]))
+					addStr = song_dict["title"].encode("utf-8")[:40] + " " + "(" + songLen + ")" \
+							" - " + song_dict["artist"]
+					self.playlistWin.addstr(i,0, addStr)
+				i = i+1
+		else:
+			self.playlistWin.addstr(0,0,"No results found!")
+			self.playlistWin.refresh()
+
+		self.screen.refresh()
+	
+	#handle special case keys
+	def _validateKey(self, key):
+		#Is the key a backspace? Process as ctrl+h
+		if(key == 127):
+			return curses.KEY_BACKSPACE
+		#handle enter or ctrl+g press
+		elif(key == 7 or key == 10):
+			return curses.ascii.BEL
+		#Any other key is fine
+		else:
+			return key
+
+	# Main function to setup GUI and write handle events 
+	def main(self):
+		self.logMsg("Entering event loop function")
+
+		self.setupGUI()
+		self.writePlayerState(fetch=True)
+
+		self.songTimer = self.timer(self)
+		self.pollingThread = self.poll(self)
+		self.songTimer.start()
+		self.pollingThread.start()
+		
+		self.searchbox.stripspaces = 1
+
+		#input handler
+		while(True):
+			#Make sure that while we're reading input, we don't have a rogue thread
+			#come and redraw the screen.
+			self.termLock.acquire()
+			try:
+				s = self.searchbox.edit(self._validateKey)
+			finally:
+				curses.noecho()
+				self.termLock.release()
+
+			#Todo: convert this to state machine...
+			if (s == "!q " or s == "!quit " or s=="!exit"):
+				self.logMsg("Breaking input loop")
+				break
+
+			#Go back to the queue view. Re-creates the polling thread.
+			elif (s == "!l " or s == "!list "):
+				self.logMsg("Redisplaying queue")
+				self.playlistWin.clear()
+				self.playlistWin.refresh()
+
+				self.screen.addstr(2,2, " Result ", curses.A_BOLD)
+				self.screen.refresh()
+			
+				#Restart thread, because if we're listing - then
+				#we need to make sure the thread hasn't been killed yet.
+				if self.pollingThread is None:
+					self.pollingThread = self.poll(self)
+					self.pollingThread.start()
+
+				self.searchboxWin.clear()
+				self.searchboxWin.refresh()
+
+			else:
+				self.logMsg("Search query: " + s )
+				self.runSearch(s)
+				self.searchboxWin.clear()
+				self.searchboxWin.refresh()
+
+		self.terminate(0)
+
+	#Capture SIGINT (Ctrl + C) to prevent awkward terminal after force kill
+	def sigint_handler(self, signal, frame):
+		self.terminate(0)
+
+
+# Start program from command line.
+# Todo: add command line input options, rather than making the entire application
+# based upon curses.
+if __name__ == "__main__":
+	#When logging is set to True, a logfile would be created. This is left for debugging purposes.
+	ampyObj = ampy(logging=False)
+	ampyObj.main()

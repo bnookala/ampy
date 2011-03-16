@@ -1,0 +1,41 @@
+AMPY is a command line frontend to the Acoustics Music Player (AMP),
+developed by Adrian Kreher (akreher2@illinois.edu), and in use by the
+Association for Computing Machinery. AMPY is currently in development as of
+November 19th, 2010.
+
+The source code for ampy (in its most recent revision) can be found online:
+http://bitbucket.org/bnookala/ampy/
+
+Currently, there are a lot of known bugs:
+    -uses curses. Curses is a problem, because it's incredibly undocumented. We need to 
+    find a better library, that's capable of reporting actual errors...
+    -because of curses, there's a lot of issues writing to the terminal, that come up
+     when multiple threads attempt to write to the term. The searchbox is consistently
+     blocking for input, so when the player state is redrawn, corrupted text may be input.
+
+Features:
+    -Search
+    -Queue (shows the list of songs that will play)
+    -Nice little countdown timer :D
+    -Multi-threaded!
+    -Logging (turned off by default)
+
+Future features:
+    -Authentication
+    -Voting up songs/vote your song to the top of your queue
+    -Playlist
+
+Instructions:
+    -Run ampy2/ampy
+    -To quit, either use the "ctrl+c" combination, or type: "!quit" or "!q", 
+     then hit enter
+    -To search, just type and hit enter.
+    -To get back to the queue, type "!l" or "!list", then hit enter.
+
+AMPY uses ncurses and python-core 2.6. 
+
+Though this code is not malicious in any way, I disclaim responsibility for any problems that may arise with your hardware.
+
+Thanks,
+Bhargav Nookala
+bnooka2@uiuc.edu
