@@ -11,31 +11,65 @@ import ampylib
 
 class ampy:
     """ An AMP Python Client. """
-
-
     rloop = None
 
-    txt = None
-    fill = None
+    frame = None
+    header = None
+    body = None
+    footer = None
+
+    palette = [
+            ('banner', '', '', '', '#ffa', '#60a'),
+            ('streak', '', '', '', 'g50', '#60a'),
+            ('key', 'default', 'default', 'underline'),
+            ('footer bg', '', '', '', 'g50', '#60a'),]
+
+    header_text = [
+            ('banner', " AMPy - An Acoustics Client "),
+            ]
+
+    footer_text = [
+            ('key', "ENTER"), (" for more information, "),
+            ('key', "s"), (" to search, "),
+            ('key', "l"), (" to login, "),
+            ('key', "+"), (" to vote up, "),
+            ('key', "-"), (" to vote down, "),
+            ('key', "q"), (" to quit, "),]
+
 
     def sigint_handler(self, signal, frame):
+        """ Handle SIGINT """
 
         raise urwid.ExitMainLoop()
 
-    def main(self, input):
+    def key_handler(self, input):
+        """ Handle the input keys """
 
-        if input in ('q', 'Q'):
+        if input == 'enter':
+            #select song
+        elif input == 's':
+            #search dialog
+        elif input == 'l':
+            #login dialog, if logged in else tell user
+        elif input == '+':
+            #upvote song
+        elif input == '-':
+            #remove vote from song you've voted for.
+        elif input in ('q', 'Q'):
             raise urwid.ExitMainLoop()
-        self.txt.set_text(repr(input))
 
     def __init__(self):
 
         signal.signal(signal.SIGINT, self.sigint_handler)
 
-        self.txt = urwid.Text("Hello World")
-        self.fill = urwid.Filler(self.txt, 'top')
+        self.header = urwid.Pile([
+            urwid.AttrMap(urwid.Text(self.header_text, align='center'), 'streak'),
+            ])
+        self.footer = urwid.AttrMap(urwid.Text(self.footer_text, align='left'), 'footer bg')
 
-        self.rloop = urwid.MainLoop(self.fill, unhandled_input=self.main)
+        self.frame = urwid.Frame(self.body, self.header, self.footer)
+
+        self.rloop = urwid.MainLoop(self.frame, self.palette, unhandled_input=self.main)
 
     def run(self):
 
