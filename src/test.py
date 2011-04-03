@@ -1,30 +1,33 @@
-#!/usr/bin/env python
-
 import urwid
 
-palette = [
-	('banner', '', '', '', '#ffa', '#60d'),
-	('streak', '', '', '', 'g50', '#60a'),
-	('inside', '', '', '', 'g38', '#808'),
-	('outside', '', '', '', 'g27', '#a06'),
-	('bg', '', '', '', 'g7', '#d06'),]
+palette = [('header', 'white', 'black'),
+    ('reveal focus', 'black', 'dark cyan', 'standout'),]
+content = urwid.SimpleListWalker([
+    urwid.AttrMap(w, None, 'reveal focus') for w in [
+		urwid.Text("This is a text string that is fairly long"),
+		urwid.Divider("-"),
+		urwid.Text("Short one"),
+		urwid.Text("Another"),
+		urwid.Divider("-"),
+		urwid.Text("What could be after this?"),
+		urwid.Text("The end."),
+		]
+	])
+listbox = urwid.ListBox(content)
+show_key = urwid.Text("", wrap='clip')
+head = urwid.AttrMap(show_key, 'header')
+top = urwid.Frame(listbox, head)
 
-txt = urwid.Text(('banner', " Hello World "), align='center')
-map1 = urwid.AttrMap(txt, 'streak')
-pile = urwid.Pile([
-		urwid.AttrMap(urwid.Divider(), 'outside'),
-		urwid.AttrMap(urwid.Divider(), 'inside'),
-		map1,
-		urwid.AttrMap(urwid.Divider(), 'inside'),
-		urwid.AttrMap(urwid.Divider(), 'outside')])
-fill = urwid.Filler(pile)
-map2 = urwid.AttrMap(fill, 'bg')
+def show_all_input(input, raw):
+    show_key.set_text("Pressed: " + " ".join([
+        unicode(i) for i in input]))
+    return input
 
-def exit_on_q(input):
-	if input in ('q', 'Q'):
-		raise urwid.ExitMainLoop()
+def exit_on_cr(input):
+    if input == 'enter':
+        raise urwid.ExitMainLoop()
 
-loop = urwid.MainLoop(map2, palette, unhandled_input=exit_on_q)
-loop.screen.set_terminal_properties(colors=256)
+loop = urwid.MainLoop(top, palette,
+    input_filter=show_all_input, unhandled_input=exit_on_cr)
 loop.run()
 
