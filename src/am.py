@@ -9,6 +9,28 @@ import signal
 import urwid
 import ampylib
 
+class SongWalker(urwid.ListWalker):
+    """ Listwalker compatible class for songs """
+
+    focus = None
+
+    def __init__(self):
+        self.focus = 0
+
+    def get_focus(self):
+        
+        return 
+
+    def set_focus(self, focus):
+        self.focus = focus
+        self._modified()
+
+    def get_next(self, position):
+        return
+
+    def get_prev(self, position):
+        return
+
 class ampy:
     """ An AMP Python Client. """
     rloop = None

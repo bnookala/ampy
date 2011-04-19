@@ -29,7 +29,12 @@ import time
 
 #Needed for URL handling
 import urllib2
-import simplejson as json
+
+#json
+if sys.version_info < (2, 6):
+	import simplejson as json
+else:
+	import json
 
 #Urls/Miscellaneous settings.
 class settings:
