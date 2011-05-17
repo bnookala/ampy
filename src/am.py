@@ -1,4 +1,4 @@
-#!/usr/bin/env pythoiin
+#!/usr/bin/env python
 
 #AMPY V3
 
